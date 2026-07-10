@@ -1,0 +1,66 @@
+name: damai-local
+
+services:
+  mysql:
+    image: mysql:5.7.44
+    container_name: damai-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "3306:3306"
+    volumes:
+      - damai-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  redis:
+    image: redis:6.0.8
+    container_name: damai-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    ports:
+      - "6379:6379"
+    volumes:
+      - damai-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  nacos:
+    image: nacos/nacos-server:v2.2.3
+    container_name: damai-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      NACOS_AUTH_ENABLE: "false"
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+      JVM_XMN: 128m
+      JAVA_OPT: "-XX:-UseContainerSupport"
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    volumes:
+      - damai-nacos-data:/home/nacos/data
+      - damai-nacos-logs:/home/nacos/logs
+
+volumes:
+  damai-mysql-data:
+  damai-redis-data:
+  damai-nacos-data:
+  damai-nacos-logs:
