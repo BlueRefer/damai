@@ -76,19 +76,15 @@ const getOrderList = () => {
   })
 }
 
-function getOrderStatus(orderStatus){
-  if (orderStatus == 1) {
-    return '未支付';
+function getOrderStatus(orderStatus) {
+  const statusMap = {
+    1: '未支付',
+    2: '交易关闭',
+    3: '已支付',
+    4: '已退款'
   }
-  if (orderStatus == 2) {
-    return '交易关闭';
-  }
-  if (orderStatus == 3) {
-    return '已支付';
-  }
-  if (orderStatus == 4) {
-    return '交易关闭';
-  }
+
+  return statusMap[Number(orderStatus)] || '未知状态'
 }
 
 function cancelOrder(orderNumber){
