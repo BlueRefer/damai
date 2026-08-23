@@ -219,66 +219,286 @@ public class OrderService extends ServiceImpl<OrderMapper, Order> {
     /**
      * 支付后订单检查，以订单编号加锁，防止多次更新
      * */
-    @ServiceLock(name = UPDATE_ORDER_STATUS_LOCK,keys = {"#orderPayCheckDto.orderNumber"})
-    public OrderPayCheckVo payCheck(OrderPayCheckDto orderPayCheckDto){
-        OrderPayCheckVo orderPayCheckVo = new OrderPayCheckVo();
-        LambdaQueryWrapper<Order> orderLambdaQueryWrapper =
-                Wrappers.lambdaQuery(Order.class).eq(Order::getOrderNumber, orderPayCheckDto.getOrderNumber());
-        Order order = orderMapper.selectOne(orderLambdaQueryWrapper);
+    /**
+     * 支付后订单检查。
+     *
+     * 正确顺序：
+     * 1. 查询本地订单；
+     * 2. 查询支付渠道真实状态，并同步支付账单；
+     * 3. 根据本地订单状态和支付状态决定：
+     *    - 正常支付；
+     *    - 取消；
+     *    - 超时支付后退款。
+     */
+    @ServiceLock(
+            name = UPDATE_ORDER_STATUS_LOCK,
+            keys = {"#orderPayCheckDto.orderNumber"}
+    )
+    public OrderPayCheckVo payCheck(
+            OrderPayCheckDto orderPayCheckDto) {
+
+        OrderPayCheckVo orderPayCheckVo =
+                new OrderPayCheckVo();
+
+        LambdaQueryWrapper<Order> orderQuery =
+                Wrappers.lambdaQuery(Order.class)
+                        .eq(
+                                Order::getOrderNumber,
+                                orderPayCheckDto.getOrderNumber()
+                        );
+
+        Order order = orderMapper.selectOne(orderQuery);
+
         if (Objects.isNull(order)) {
-            throw new DaMaiFrameException(BaseCode.ORDER_NOT_EXIST);
+            throw new DaMaiFrameException(
+                    BaseCode.ORDER_NOT_EXIST
+            );
         }
-        BeanUtil.copyProperties(order,orderPayCheckVo);
-        if (Objects.equals(order.getOrderStatus(), OrderStatus.CANCEL.getCode())) {
-            RefundDto refundDto = new RefundDto();
-            refundDto.setOrderNumber(String.valueOf(order.getOrderNumber()));
-            refundDto.setAmount(order.getOrderPrice());
-            refundDto.setChannel("alipay");
-            refundDto.setReason("延迟订单关闭");
-            ApiResponse<String> response = payClient.refund(refundDto);
-            if (response.getCode().equals(BaseCode.SUCCESS.getCode())) {
+
+        BeanUtil.copyProperties(
+                order,
+                orderPayCheckVo
+        );
+
+        /*
+         * 必须先查询支付宝真实状态。
+         * PayService.tradeCheck() 会将本地支付账单
+         * 同步为支付宝返回的真实状态。
+         */
+        TradeCheckDto tradeCheckDto =
+                new TradeCheckDto();
+
+        tradeCheckDto.setOutTradeNo(
+                String.valueOf(
+                        orderPayCheckDto.getOrderNumber()
+                )
+        );
+
+        tradeCheckDto.setChannel(
+                Optional.ofNullable(
+                                PayChannel.getRc(
+                                        orderPayCheckDto
+                                                .getPayChannelType()
+                                )
+                        )
+                        .map(PayChannel::getValue)
+                        .orElseThrow(
+                                () -> new DaMaiFrameException(
+                                        BaseCode.PAY_CHANNEL_NOT_EXIST
+                                )
+                        )
+        );
+
+        ApiResponse<TradeCheckVo>
+                tradeCheckResponse =
+                payClient.tradeCheck(tradeCheckDto);
+
+        if (!Objects.equals(
+                tradeCheckResponse.getCode(),
+                BaseCode.SUCCESS.getCode())) {
+
+            throw new DaMaiFrameException(
+                    tradeCheckResponse
+            );
+        }
+
+        TradeCheckVo tradeCheckVo =
+                Optional.ofNullable(
+                                tradeCheckResponse.getData()
+                        )
+                        .orElseThrow(
+                                () -> new DaMaiFrameException(
+                                        BaseCode.PAY_BILL_NOT_EXIST
+                                )
+                        );
+
+        if (!tradeCheckVo.isSuccess()) {
+            throw new DaMaiFrameException(
+                    BaseCode.PAY_TRADE_CHECK_ERROR
+            );
+        }
+
+        Integer payBillStatus =
+                tradeCheckVo.getPayBillStatus();
+
+        Integer orderStatus =
+                order.getOrderStatus();
+
+        /*
+         * 本地订单已经超时取消，
+         * 但支付宝显示付款成功。
+         *
+         * 此时座位或库存已经释放，
+         * 不能直接恢复为已支付，
+         * 应执行退款。
+         */
+        if (Objects.equals(
+                orderStatus,
+                OrderStatus.CANCEL.getCode())) {
+
+            if (Objects.equals(
+                    payBillStatus,
+                    PayBillStatus.PAY.getCode())) {
+
+                RefundDto refundDto =
+                        new RefundDto();
+
+                refundDto.setOrderNumber(
+                        String.valueOf(
+                                order.getOrderNumber()
+                        )
+                );
+
+                refundDto.setAmount(
+                        order.getOrderPrice()
+                );
+
+                refundDto.setChannel("alipay");
+
+                refundDto.setReason(
+                        "本地订单超时关闭后支付成功"
+                );
+
+                ApiResponse<String> refundResponse =
+                        payClient.refund(refundDto);
+
+                /*
+                 * 退款失败时必须抛出异常，
+                 * 不能伪造“已退款”状态。
+                 */
+                if (!Objects.equals(
+                        refundResponse.getCode(),
+                        BaseCode.SUCCESS.getCode())) {
+
+                    log.error(
+                            "超时订单退款失败，dto={}，response={}",
+                            JSON.toJSONString(refundDto),
+                            JSON.toJSONString(
+                                    refundResponse
+                            )
+                    );
+
+                    throw new DaMaiFrameException(
+                            refundResponse
+                    );
+                }
+
+                /*
+                 * 支付宝退款成功后，
+                 * 更新订单主表。
+                 */
                 Order updateOrder = new Order();
-                updateOrder.setEditTime(DateUtils.now());
-                updateOrder.setOrderStatus(OrderStatus.REFUND.getCode());
-                orderMapper.update(updateOrder,Wrappers.lambdaUpdate(Order.class).eq(Order::getOrderNumber, order.getOrderNumber()));
-            }else {
-                log.error("pay服务退款失败 dto : {} response : {}",JSON.toJSONString(refundDto),JSON.toJSONString(response));
+
+                updateOrder.setEditTime(
+                        DateUtils.now()
+                );
+
+                updateOrder.setOrderStatus(
+                        OrderStatus.REFUND.getCode()
+                );
+
+                int updateOrderResult =
+                        orderMapper.update(
+                                updateOrder,
+                                Wrappers.lambdaUpdate(
+                                                Order.class
+                                        )
+                                        .eq(
+                                                Order::getOrderNumber,
+                                                order.getOrderNumber()
+                                        )
+                        );
+
+                /*
+                 * 同时更新购票人订单状态，
+                 * 避免主订单和子订单不一致。
+                 */
+                OrderTicketUser updateTicketUser =
+                        new OrderTicketUser();
+
+                updateTicketUser.setOrderStatus(
+                        OrderStatus.REFUND.getCode()
+                );
+
+                int updateTicketResult =
+                        orderTicketUserMapper.update(
+                                updateTicketUser,
+                                Wrappers.lambdaUpdate(
+                                                OrderTicketUser.class
+                                        )
+                                        .eq(
+                                                OrderTicketUser
+                                                        ::getOrderNumber,
+                                                order.getOrderNumber()
+                                        )
+                        );
+
+                if (updateOrderResult <= 0
+                        || updateTicketResult <= 0) {
+
+                    throw new DaMaiFrameException(
+                            BaseCode.ORDER_CANAL_ERROR
+                    );
+                }
+
+                orderPayCheckVo.setOrderStatus(
+                        OrderStatus.REFUND.getCode()
+                );
+
+                return orderPayCheckVo;
             }
-            orderPayCheckVo.setOrderStatus(OrderStatus.REFUND.getCode());
-            orderPayCheckVo.setCancelOrderTime(DateUtils.now());
+
+            /*
+             * 支付渠道也没有支付成功，
+             * 保持本地取消状态。
+             */
+            orderPayCheckVo.setOrderStatus(
+                    OrderStatus.CANCEL.getCode()
+            );
+
             return orderPayCheckVo;
         }
-        
-        TradeCheckDto tradeCheckDto = new TradeCheckDto();
-        tradeCheckDto.setOutTradeNo(String.valueOf(orderPayCheckDto.getOrderNumber()));
-        tradeCheckDto.setChannel(Optional.ofNullable(PayChannel.getRc(orderPayCheckDto.getPayChannelType()))
-                .map(PayChannel::getValue).orElseThrow(() -> new DaMaiFrameException(BaseCode.PAY_CHANNEL_NOT_EXIST)));
-        ApiResponse<TradeCheckVo> tradeCheckVoApiResponse = payClient.tradeCheck(tradeCheckDto);
-        if (!Objects.equals(tradeCheckVoApiResponse.getCode(), BaseCode.SUCCESS.getCode())) {
-            throw new DaMaiFrameException(tradeCheckVoApiResponse);
-        }
-        TradeCheckVo tradeCheckVo = Optional.ofNullable(tradeCheckVoApiResponse.getData())
-                .orElseThrow(() -> new DaMaiFrameException(BaseCode.PAY_BILL_NOT_EXIST));
-        if (tradeCheckVo.isSuccess()) {
-            Integer payBillStatus = tradeCheckVo.getPayBillStatus();
-            Integer orderStatus = order.getOrderStatus();
-            if (!Objects.equals(orderStatus, payBillStatus)) {
-                orderPayCheckVo.setOrderStatus(payBillStatus);
-                try {
-                    if (Objects.equals(payBillStatus, PayBillStatus.PAY.getCode())) {
-                        orderPayCheckVo.setPayOrderTime(DateUtils.now());
-                        orderService.updateOrderRelatedData(order.getOrderNumber(),OrderStatus.PAY);
-                    }else if (Objects.equals(payBillStatus, PayBillStatus.CANCEL.getCode())) {
-                        orderPayCheckVo.setCancelOrderTime(DateUtils.now());
-                        orderService.updateOrderRelatedData(order.getOrderNumber(),OrderStatus.CANCEL);
-                    }
-                }catch (Exception e) {
-                    log.warn("updateOrderRelatedData warn message",e);
-                }
+
+        /*
+         * 正常订单，根据支付渠道状态
+         * 更新为已支付或已取消。
+         */
+        if (!Objects.equals(
+                orderStatus,
+                payBillStatus)) {
+
+            orderPayCheckVo.setOrderStatus(
+                    payBillStatus
+            );
+
+            if (Objects.equals(
+                    payBillStatus,
+                    PayBillStatus.PAY.getCode())) {
+
+                orderPayCheckVo.setPayOrderTime(
+                        DateUtils.now()
+                );
+
+                orderService.updateOrderRelatedData(
+                        order.getOrderNumber(),
+                        OrderStatus.PAY
+                );
+
+            } else if (Objects.equals(
+                    payBillStatus,
+                    PayBillStatus.CANCEL.getCode())) {
+
+                orderPayCheckVo.setCancelOrderTime(
+                        DateUtils.now()
+                );
+
+                orderService.updateOrderRelatedData(
+                        order.getOrderNumber(),
+                        OrderStatus.CANCEL
+                );
             }
-        }else {
-            throw new DaMaiFrameException(BaseCode.PAY_TRADE_CHECK_ERROR);
         }
+
         return orderPayCheckVo;
     }
     
