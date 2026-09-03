@@ -36,6 +36,11 @@ spring:
         password: nacos
   kafka:
     bootstrap-servers: 127.0.0.1:9092
+    producer:
+      retries: 3
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
     consumer:
       #默认的消费组ID
       group-id: create_order_data

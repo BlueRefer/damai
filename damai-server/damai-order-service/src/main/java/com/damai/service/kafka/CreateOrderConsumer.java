@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.handler.annotation.Header;
 
 import static com.damai.constant.Constant.SPRING_INJECT_PREFIX_DISTINCTION_NAME;
 
@@ -44,7 +46,12 @@ public class CreateOrderConsumer {
      **/
     @KafkaListener(topics = {SPRING_INJECT_PREFIX_DISTINCTION_NAME+"-"+"${spring.kafka.topic:create_order}"})
     public void consumerOrderMessage(
-            ConsumerRecord<String, String> consumerRecord) {
+            ConsumerRecord<String, String> consumerRecord,
+            @Header(
+                    name = KafkaHeaders.DELIVERY_ATTEMPT,
+                    required = false
+            )
+            Integer deliveryAttempt) {
 
         String value = consumerRecord.value();
 
@@ -57,6 +64,8 @@ public class CreateOrderConsumer {
             );
             return;
         }
+        int currentDeliveryAttempt =
+                deliveryAttempt == null ? 1 : deliveryAttempt;
 
         try {
             OrderCreateDto orderCreateDto =
@@ -80,19 +89,20 @@ public class CreateOrderConsumer {
                             - createOrderTimeTimestamp;
 
             log.info(
-                    "消费创建订单消息，订单号={}，partition={}，offset={}，延迟={}ms",
+                    "消费创建订单消息，订单号={}，partition={}，offset={}，延迟={}ms，deliveryAttempt={}",
                     orderCreateDto.getOrderNumber(),
                     consumerRecord.partition(),
                     consumerRecord.offset(),
-                    delayTime
+                    delayTime,
+                    currentDeliveryAttempt
             );
 
             /*
              * 消息延迟超过阈值，
              * 沿用项目原来的库存/座位补偿逻辑。
              */
-            if (delayTime > MESSAGE_DELAY_TIME) {
-
+            if (currentDeliveryAttempt == 1
+                    && delayTime > MESSAGE_DELAY_TIME) {
                 log.warn(
                         "创建订单消息延迟超过{}ms，执行补偿，订单号={}",
                         MESSAGE_DELAY_TIME,
@@ -144,9 +154,21 @@ public class CreateOrderConsumer {
                  */
                 return;
             }
+            /*
+             * 如果第一次到达是及时的，
+             * 只是因为Kafka重试导致消息年龄超过5秒，
+             * 不能再把它当成延迟废单。
+             */
+            if (currentDeliveryAttempt > 1
+                    && delayTime > MESSAGE_DELAY_TIME) {
 
-
-
+                log.info(
+                        "Kafka重试消息已超过延迟阈值，但首次投递及时，跳过延迟判废，订单号={}，deliveryAttempt={}，delay={}ms",
+                        orderCreateDto.getOrderNumber(),
+                        currentDeliveryAttempt,
+                        delayTime
+                );
+            }
             String orderNumber =
                     orderService.createMq(
                             orderCreateDto
