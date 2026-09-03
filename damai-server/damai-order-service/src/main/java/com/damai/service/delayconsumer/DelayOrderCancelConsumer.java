@@ -10,7 +10,8 @@ import com.damai.service.OrderService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-
+import com.damai.enums.BaseCode;
+import com.damai.exception.DaMaiFrameException;
 import static com.damai.service.constant.OrderConstant.DELAY_ORDER_CANCEL_TOPIC;
 
 /**
@@ -42,11 +43,87 @@ public class DelayOrderCancelConsumer implements ConsumerTask {
         //取消订单
         OrderCancelDto orderCancelDto = new OrderCancelDto();
         orderCancelDto.setOrderNumber(delayOrderCancelDto.getOrderNumber());
-        boolean cancel = orderService.cancel(orderCancelDto);
-        if (cancel) {
-            log.info("延迟订单取消成功 orderCancelDto : {}",content);
-        }else {
-            log.error("延迟订单取消失败 orderCancelDto : {}",content);
+        try {
+
+            boolean cancel =
+                    orderService.cancel(orderCancelDto);
+
+            if (cancel) {
+
+                log.info(
+                        "延迟订单取消成功，orderNumber={}",
+                        orderCancelDto.getOrderNumber()
+                );
+
+            } else {
+
+                log.error(
+                        "延迟订单取消失败，orderNumber={}",
+                        orderCancelDto.getOrderNumber()
+                );
+            }
+
+        } catch (DaMaiFrameException e) {
+
+            /*
+             * 延迟消息可能重复投递，
+             * 或订单已经被其他流程取消。
+             *
+             * 已取消属于目标状态，
+             * 因此按照幂等成功处理。
+             */
+            if (BaseCode.ORDER_CANCEL
+                    .getCode()
+                    .equals(e.getCode())) {
+
+                log.info(
+                        "延迟取消消息重复消费，订单已经取消，按幂等成功处理，orderNumber={}",
+                        orderCancelDto.getOrderNumber()
+                );
+
+                return;
+            }
+
+            /*
+             * 用户已经完成支付后，
+             * 延迟取消任务仍然可能到达。
+             *
+             * 已支付订单不能再执行取消，
+             * 这里属于正常业务跳过，而不是消费失败。
+             */
+            if (BaseCode.ORDER_PAY
+                    .getCode()
+                    .equals(e.getCode())) {
+
+                log.info(
+                        "延迟取消消息到达时订单已支付，跳过取消，orderNumber={}",
+                        orderCancelDto.getOrderNumber()
+                );
+
+                return;
+            }
+
+            /*
+             * 已退款也是终态，
+             * 无需再次执行取消。
+             */
+            if (BaseCode.ORDER_REFUND
+                    .getCode()
+                    .equals(e.getCode())) {
+
+                log.info(
+                        "延迟取消消息到达时订单已退款，跳过取消，orderNumber={}",
+                        orderCancelDto.getOrderNumber()
+                );
+
+                return;
+            }
+
+            /*
+             * 订单不存在、数据库异常等其他问题
+             * 不能吞掉，继续向上抛。
+             */
+            throw e;
         }
     }
     
