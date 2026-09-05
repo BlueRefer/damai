@@ -44,4 +44,29 @@ public class DelayQueueProperties {
      * 延时队列的隔离分区数，延时有瓶颈时 可调大次数，但会增大redis的cpu消耗(同一个topic发送者和消费者的隔离分区数必须相同)
      * */
     private Integer isolationRegionCount = 5;
+    /**
+     * 消费失败后的最大重试次数。
+     *
+     * 3表示：
+     * 首次消费 + 最多3次重试。
+     */
+    private Integer maxRetryCount = 3;
+
+    /**
+     * 第一次重试的基础延迟。
+     *
+     * 配合指数退避：
+     * 1s -> 2s -> 4s
+     */
+    private Long retryInitialDelay = 1L;
+
+    /**
+     * 重试延迟时间单位。
+     */
+    private TimeUnit retryTimeUnit = TimeUnit.SECONDS;
+
+    /**
+     * 死信队列名称后缀。
+     */
+    private String deadLetterSuffix = ".dead-letter";
 }

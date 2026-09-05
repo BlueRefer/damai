@@ -7,7 +7,7 @@
       <div class="isPay" v-if="orderData[0]&&orderData[0].orderStatus == 1"><span>未支付</span><span>需付款: <span>￥{{orderData[0].orderPrice}}</span></span></div>
       <div class="isPay" v-if="orderData[0]&&orderData[0].orderStatus == 2">交易关闭<span>需付款: <span>￥{{orderData[0].orderPrice}}</span></span></div>
       <div class="isPay" v-if="orderData[0]&&orderData[0].orderStatus == 3"><span>已支付</span> <span>实付款: <span>￥{{orderData[0].orderPrice}}</span></span></div>
-      <div class="isPay" v-if="orderData[0]&&orderData[0].orderStatus == 4">交易关闭<span>需付款: <span>￥{{orderData[0].orderPrice}}</span></span></div>
+      <div class="isPay" v-if="orderData[0] && orderData[0].orderStatus == 4"><span>已退款</span><span>退款金额:<span>￥{{ orderData[0].orderPrice }}</span></span></div>
       <div class="program-table">
         <el-table :data="orderData" border style="width: 100%" class="tableCloumn">
           <el-table-column   label="项目信息"  width="400px" >
@@ -119,19 +119,15 @@ function getOrderDetail() {
   })
 }
 
-function getOrderStatus(orderStatus){
-  if (orderStatus == 1) {
-    return '未支付';
+function getOrderStatus(orderStatus) {
+  const statusMap = {
+    1: '未支付',
+    2: '交易关闭',
+    3: '已支付',
+    4: '已退款'
   }
-  if (orderStatus == 2) {
-    return '交易关闭';
-  }
-  if (orderStatus == 3) {
-    return '已支付';
-  }
-  if (orderStatus == 4) {
-    return '交易关闭';
-  }
+
+  return statusMap[Number(orderStatus)] || '未知状态'
 }
 </script>
 

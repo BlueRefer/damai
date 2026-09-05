@@ -3,7 +3,7 @@
   <Header></Header>
   <div class="main">
     <el-icon :size="50" class="iconCircle"><CircleCheck   color="rgb(255, 40, 105)" /></el-icon>
-    <span class="paySuccess">支付成功</span>
+    <span class="paySuccess">{{ resultText }}</span>
    <div class="btn">
      <el-button  class="continueQuery" @click="continueQuery"    >继续逛逛</el-button>
      <el-button   class="orderQuery" @click="orderQuery"    >订单列表</el-button>
@@ -22,6 +22,7 @@ import {payCheckApi} from '@/api/order.js'
 const route = useRoute();
 const router = useRouter();
 const orderNumber = ref('');
+const resultText = ref('正在确认支付结果...')
 
 //继续逛逛
 const  continueQuery=()=>{
@@ -32,21 +33,70 @@ const orderQuery=()=>{
   router.push({path:'/orderManagement/index'})
 }
 
-onMounted(()=>{
-  orderNumber.value =  localStorage.getItem('orderNumber' )
-  console.log('这里是获取的订单号========================================', localStorage.getItem('orderNumber' ));
-  //将这次获取到订单号移除
-  localStorage.removeItem('orderNumber')
-  if (orderNumber.value != '' && orderNumber.value != null){
-    const tradeCheckParams = {
-      'orderNumber':orderNumber.value,
-      'payChannelType':'1'
-    }
-    payCheckApi(tradeCheckParams).then(response => {
-      console.log('交易状态查询结果',response.data)
+onMounted(async () => {
+  orderNumber.value =
+    localStorage.getItem('orderNumber')
+
+  console.log(
+    '这里是获取的订单号================',
+    orderNumber.value
+  )
+
+  if (!orderNumber.value) {
+    router.replace({ path: '/' })
+    return
+  }
+
+  try {
+    const response = await payCheckApi({
+      orderNumber: orderNumber.value,
+      payChannelType: 1
     })
-  }else {
-    router.replace({path:'/'})
+
+    console.log(
+      '交易状态查询结果',
+      response.data
+    )
+
+    const orderStatus =
+      Number(response?.data?.orderStatus)
+
+    switch (orderStatus) {
+      case 1:
+        resultText.value =
+          '支付结果确认中，请稍后查看订单'
+        break
+
+      case 2:
+        resultText.value =
+          '订单已关闭'
+        localStorage.removeItem('orderNumber')
+        break
+
+      case 3:
+        resultText.value =
+          '支付成功'
+        localStorage.removeItem('orderNumber')
+        break
+
+      case 4:
+        resultText.value =
+          '订单已退款'
+        localStorage.removeItem('orderNumber')
+        break
+
+      default:
+        resultText.value =
+          '暂时无法确认支付结果'
+    }
+  } catch (error) {
+    console.error(
+      '支付状态查询失败',
+      error
+    )
+
+    resultText.value =
+      '支付状态查询失败，请稍后查看订单'
   }
 })
 </script>
